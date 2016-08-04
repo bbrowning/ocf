@@ -25,13 +25,13 @@ import (
 var RootCmd = &cobra.Command{
 	Use:   "ocf",
 	Short: "A tool to ease migration from Cloud Foundry to OpenShift",
-	Long:  `A tool to ease migration from Cloud Foundry to OpenShift.
+	Long: `A tool to ease migration from Cloud Foundry to OpenShift.
 
 This tool provides various commands (listed below) to help migrate and
 run Cloud Foundry applications on OpenShift.`,
-// Uncomment the following line if your bare application
-// has an action associated with it:
-//	Run: func(cmd *cobra.Command, args []string) { },
+	// Uncomment the following line if your bare application
+	// has an action associated with it:
+	//	Run: func(cmd *cobra.Command, args []string) { },
 }
 
 // Execute adds all child commands to the root command sets flags appropriately.

@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"path/filepath"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/ghodss/yaml"
@@ -39,18 +39,17 @@ below.`
 
   # Update an existing application with a manifest.yml
   %[1]s push`
-	
 )
 
 // PushConfig contains all the necessary configuration for the push command
 type PushConfig struct {
-	Buildpack string
-	Command string
+	Buildpack    string
+	Command      string
 	ManifestPath string
-	Instances int
-	Disk string
-	Memory string
-	Path string
+	Instances    int
+	Disk         string
+	Memory       string
+	Path         string
 }
 
 type Manifest struct {
@@ -58,13 +57,13 @@ type Manifest struct {
 }
 
 type Application struct {
-	Name string `json:"name"`
+	Name      string `json:"name"`
 	Buildpack string `json:"buildpack"`
-	Command string `json:"command"`
+	Command   string `json:"command"`
 	DiskQuota string `json:"disk_quota"`
-	Instances int `json:"instances"`
-	Memory string `json:"memory"`
-	Path string `json:"path"`
+	Instances int    `json:"instances"`
+	Memory    string `json:"memory"`
+	Path      string `json:"path"`
 }
 
 func init() {
@@ -93,7 +92,7 @@ func newPushCmd(commandName string) *cobra.Command {
 	cmd.Flags().StringVarP(&config.Disk, "disk", "k", "", "Disk limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Memory, "memory", "m", "", "Memory limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Path, "path", "p", "", "Path to app directory or to a zip file of the contents of the app directory")
-	
+
 	return cmd
 }
 
@@ -186,7 +185,7 @@ func (config *PushConfig) Run(args []string) error {
 			os.Exit(1)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -205,7 +204,7 @@ func (config *PushConfig) getManifestApps() ([]Application, error) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, "manifest.yml")
 	}
-  y, err := ioutil.ReadFile(path)
+	y, err := ioutil.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []Application{}, nil
@@ -213,14 +212,14 @@ func (config *PushConfig) getManifestApps() ([]Application, error) {
 			return nil, err
 		}
 	}
-	
+
 	var m Manifest
 	err = yaml.Unmarshal(y, &m)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("manifest: %+v\n", m)
-	
+
 	return m.Applications, nil
 }
 
@@ -246,7 +245,7 @@ func (config *PushConfig) getFlagsApp(args []string) (Application, error) {
 	if config.Path != "" {
 		app.Path = config.Path
 	}
-	
+
 	return app, nil
 }
 
