@@ -34,6 +34,8 @@ run Cloud Foundry applications on OpenShift.`,
 	//	Run: func(cmd *cobra.Command, args []string) { },
 }
 
+var Debug bool
+
 // Execute adds all child commands to the root command sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
@@ -47,4 +49,5 @@ func init() {
 	// Here you will define your flags and configuration settings.
 	// Cobra supports Persistent Flags, which, if defined here,
 	// will be global for your application.
+	RootCmd.PersistentFlags().BoolVarP(&Debug, "debug", "", false, "Enable debug logging")
 }

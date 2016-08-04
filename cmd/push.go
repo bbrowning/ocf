@@ -97,96 +97,163 @@ func newPushCmd(commandName string) *cobra.Command {
 }
 
 func (config *PushConfig) Run(args []string) error {
-	fmt.Printf("Config: %+v\n", config)
+	debugf("Config: %+v\n", config)
 
 	manifestApps, err := config.getManifestApps()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("manifestApps: %+v\n", manifestApps)
+	debugf("manifestApps: %+v\n", manifestApps)
 
 	flagsApp, err := config.getFlagsApp(args)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("flagsApp: %+v\n", flagsApp)
+	debugf("flagsApp: %+v\n", flagsApp)
 
 	mergedApps, err := config.mergeAppsFromManifestAndFlags(manifestApps, flagsApp)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("mergedApps: %+v\n", mergedApps)
+	debugf("mergedApps: %+v\n", mergedApps)
+	debugf("\n\n\n")
 
-	fmt.Println("")
-	fmt.Println("")
-	fmt.Println("")
 	for _, app := range mergedApps {
 		if app.Name == "" {
 			return errors.New("Error: no name found for app")
 		}
 
+		config.ensureLoggedIn()
 		// TODO: help user select the correct project instead of just
 		// assuming they've already done that
-		err := exec.Command("oc", "whoami").Run()
-		if err != nil {
-			loginCmd := exec.Command("oc", "login")
-			loginCmd.Stdin = os.Stdin
-			loginCmd.Stdout = os.Stdout
-			loginCmd.Stderr = os.Stderr
-			err = loginCmd.Run()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
+		config.displayProject()
+		config.ensureBuildExists(app)
+		config.startBuild(app)
+		config.ensureAppExists(app)
+		config.ensureRouteExists(app)
+		config.displayRoute(app)
+	}
 
-		output, err := exec.Command("oc", "project").CombinedOutput()
+	return nil
+}
+
+func (config *PushConfig) ensureLoggedIn() {
+	err := config.ocExec("whoami").Run()
+	if err != nil {
+		loginCmd := config.ocExec("login")
+		loginCmd.Stdin = os.Stdin
+		loginCmd.Stdout = os.Stdout
+		loginCmd.Stderr = os.Stderr
+		err = loginCmd.Run()
+		if err != nil {
+			config.exitWithError(err)
+		}
+	}
+}
+
+func (config *PushConfig) displayProject() {
+	output, err := config.ocExec("project").CombinedOutput()
+	fmt.Println(string(output))
+	if err != nil {
+		config.exitWithError(err)
+	}
+}
+
+func (config *PushConfig) ensureBuildExists(app Application) {
+	output, err := config.ocExec("get", "bc", app.Name).CombinedOutput()
+	if strings.Contains(string(output), "not found") {
+		newCmd := config.ocExec("new-build", "bbrowning/openshift-cloudfoundry-docker19",
+			"--binary=true", fmt.Sprint("--name=", app.Name))
+		fmt.Printf("==> Creating build with command: %s\n", strings.Join(newCmd.Args, " "))
+		output, err = newCmd.CombinedOutput()
+		fmt.Println(string(output))
+		// oc new-build sometimes gives a non-zero exit status for ignorable errors
+		// if err != nil {
+		// 	fmt.Fprintln(os.Stderr, err)
+		// 	os.Exit(1)
+		// }
+	} else if err != nil {
+		config.exitWithOutputAndError(output, err)
+	} else {
+		fmt.Printf("==> Build configuration already exists for %s, skipping creating one\n", app.Name)
+	}
+}
+
+func (config *PushConfig) startBuild(app Application) {
+	var pathArg string
+	if fi, err := os.Stat(app.Path); err != nil || fi.IsDir() {
+		pathArg = fmt.Sprint("--from-dir=", app.Path)
+	} else {
+		pathArg = fmt.Sprint("--from-file=", app.Path)
+	}
+	startBuildCmd := config.ocExec("start-build", app.Name, pathArg, "--follow")
+	startBuildCmd.Stdout = os.Stdout
+	startBuildCmd.Stderr = os.Stderr
+	fmt.Printf("==> Starting build with command: %s\n", strings.Join(startBuildCmd.Args, " "))
+	err := startBuildCmd.Run()
+	if err != nil {
+		config.exitWithError(err)
+	}
+}
+
+func (config *PushConfig) ensureAppExists(app Application) {
+	output, err := config.ocExec("get", "svc", app.Name).CombinedOutput()
+	if strings.Contains(string(output), "not found") {
+		newCmd := config.ocExec("new-app", app.Name)
+		fmt.Printf("==> Creating application with command: %s\n", strings.Join(newCmd.Args, " "))
+		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	} else if err != nil {
+		config.exitWithOutputAndError(output, err)
+	} else {
+		fmt.Printf("==> Application already exists for %s, skipping creating one\n", app.Name)
+	}
+}
 
-		// Ensure the build exists
-		output, err = exec.Command("oc", "get", "bc", app.Name).CombinedOutput()
-		if strings.Contains(string(output), "not found") {
-			newCmd := exec.Command("oc", "new-build", "bbrowning/openshift-cloudfoundry@sha256:bbdf7d8624b0a03230fa8370d16057546986c7afa4fcb22d71e7691e4a96c3cb",
-				"--binary=true", fmt.Sprint("--name=", app.Name))
-			fmt.Printf("Creating build with command: %s\n", strings.Join(newCmd.Args, " "))
-			output, err = newCmd.CombinedOutput()
-			fmt.Println(string(output))
-			// if err != nil {
-			// 	fmt.Fprintln(os.Stderr, err)
-			// 	os.Exit(1)
-			// }
-		} else if err != nil {
-			fmt.Println(string(output))
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		} else {
-			fmt.Printf("Build configuration already exists for %s, skipping creating one\n", app.Name)
-		}
-
-		// Start the build
-		var pathArg string
-		if fi, err := os.Stat(app.Path); err != nil || fi.IsDir() {
-			pathArg = fmt.Sprint("--from-dir=", app.Path)
-		} else {
-			pathArg = fmt.Sprint("--from-file=", app.Path)
-		}
-		startBuildCmd := exec.Command("oc", "start-build", app.Name, pathArg, "--follow")
-		startBuildCmd.Stdout = os.Stdout
-		startBuildCmd.Stderr = os.Stderr
-		// startBuildCmd.Env = append(os.Environ(), "DEBUG=true")
-		fmt.Printf("Starting build with command: %s\n", strings.Join(startBuildCmd.Args, " "))
-		err = startBuildCmd.Run()
+func (config *PushConfig) ensureRouteExists(app Application) {
+	output, err := config.ocExec("get", "route", app.Name).CombinedOutput()
+	if strings.Contains(string(output), "not found") {
+		newCmd := config.ocExec("expose", fmt.Sprint("svc/", app.Name))
+		fmt.Printf("==> Creating route with command: %s\n", strings.Join(newCmd.Args, " "))
+		output, err = newCmd.CombinedOutput()
+		fmt.Println(string(output))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	} else if err != nil {
+		config.exitWithOutputAndError(output, err)
+	} else {
+		fmt.Printf("==> Route already exists for %s, skipping creating one\n", app.Name)
 	}
+}
 
-	return nil
+func (config *PushConfig) displayRoute(app Application) {
+	output, err := config.ocExec("get", "route", app.Name, "-o", "template",
+		"--template={{.spec.host}}").CombinedOutput()
+	if err != nil {
+		config.exitWithOutputAndError(output, err)
+	} else {
+		fmt.Printf("==> Your application is available at %s\n", output)
+	}
+}
+
+func (config *PushConfig) ocExec(args ...string) *exec.Cmd {
+	return exec.Command("oc", args...)
+}
+
+func (config *PushConfig) exitWithError(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}
+
+func (config *PushConfig) exitWithOutputAndError(output []byte, err error) {
+	fmt.Println(string(output))
+	config.exitWithError(err)
 }
 
 func (config *PushConfig) getManifestApps() ([]Application, error) {
@@ -218,7 +285,7 @@ func (config *PushConfig) getManifestApps() ([]Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("manifest: %+v\n", m)
+	debugf("manifest: %+v\n", m)
 
 	return m.Applications, nil
 }
@@ -307,4 +374,10 @@ func addApp(apps *[]Application, app Application) error {
 
 	*apps = append(*apps, app)
 	return nil
+}
+
+func debugf(format string, v ...interface{}) {
+	if Debug {
+		fmt.Printf(format, v...)
+	}
 }
