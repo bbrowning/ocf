@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/ghodss/yaml"
@@ -85,11 +86,11 @@ func newPushCmd(commandName string) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&config.Buildpack, "buildpack", "b", "", "Custom buildpack by name (e.g. my-buildpack) or Git URL (e.g. 'https://github.com/cloudfoundry/java-buildpack.git') or Git URL with a branch or tag (e.g. 'https://github.com/cloudfoundry/java-buildpack.git#v3.3.0' for 'v3.3.0' tag). To use built-in buildpacks only, specify 'default' or 'null'")
-	cmd.Flags().StringVarP(&config.Command, "command", "c", "", "Startup command, set to null to reset to default start command")
+	// cmd.Flags().StringVarP(&config.Buildpack, "buildpack", "b", "", "Custom buildpack by name (e.g. my-buildpack) or Git URL (e.g. 'https://github.com/cloudfoundry/java-buildpack.git') or Git URL with a branch or tag (e.g. 'https://github.com/cloudfoundry/java-buildpack.git#v3.3.0' for 'v3.3.0' tag). To use built-in buildpacks only, specify 'default' or 'null'")
+	// cmd.Flags().StringVarP(&config.Command, "command", "c", "", "Startup command, set to null to reset to default start command")
 	cmd.Flags().StringVarP(&config.ManifestPath, "manifest-path", "f", "", "Path to manifest")
-	cmd.Flags().IntVarP(&config.Instances, "instances", "i", 1, "Number of instances")
-	cmd.Flags().StringVarP(&config.Disk, "disk", "k", "", "Disk limit (e.g. 256M, 1024M, 1G)")
+	// cmd.Flags().IntVarP(&config.Instances, "instances", "i", 1, "Number of instances")
+	// cmd.Flags().StringVarP(&config.Disk, "disk", "k", "", "Disk limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Memory, "memory", "m", "", "Memory limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Path, "path", "p", "", "Path to app directory or to a zip file of the contents of the app directory")
 
@@ -111,7 +112,7 @@ func (config *PushConfig) Run(args []string) error {
 	}
 	debugf("flagsApp: %+v\n", flagsApp)
 
-	mergedApps, err := config.mergeAppsFromManifestAndFlags(manifestApps, flagsApp)
+	mergedApps, err := mergeAppsFromManifestAndFlags(manifestApps, flagsApp)
 	if err != nil {
 		return err
 	}
@@ -123,137 +124,145 @@ func (config *PushConfig) Run(args []string) error {
 			return errors.New("Error: no name found for app")
 		}
 
-		config.ensureLoggedIn()
+		app.ensureLoggedIn()
 		// TODO: help user select the correct project instead of just
 		// assuming they've already done that
-		config.displayProject()
-		config.ensureBuildExists(app)
-		config.startBuild(app)
-		config.ensureAppExists(app)
-		config.ensureRouteExists(app)
-		config.displayRoute(app)
+		app.displayProject()
+		app.ensureBuildExists()
+		app.startBuild()
+		app.ensureDeploymentExists()
+		app.ensureServiceExists()
+		app.ensureRouteExists()
+		app.displayRoute()
 	}
 
 	return nil
 }
 
-func (config *PushConfig) ensureLoggedIn() {
-	err := config.ocExec("whoami").Run()
+func (app *Application) ensureLoggedIn() {
+	err := ocExec("whoami").Run()
 	if err != nil {
-		loginCmd := config.ocExec("login")
+		loginCmd := ocExec("login")
 		loginCmd.Stdin = os.Stdin
 		loginCmd.Stdout = os.Stdout
 		loginCmd.Stderr = os.Stderr
 		err = loginCmd.Run()
 		if err != nil {
-			config.exitWithError(err)
+			exitWithError(err)
 		}
 	}
 }
 
-func (config *PushConfig) displayProject() {
-	output, err := config.ocExec("project").CombinedOutput()
+func (app *Application) displayProject() {
+	output, err := ocExec("project").CombinedOutput()
 	fmt.Println(string(output))
 	if err != nil {
-		config.exitWithError(err)
+		exitWithError(err)
 	}
 }
 
-func (config *PushConfig) ensureBuildExists(app Application) {
-	output, err := config.ocExec("get", "bc", app.Name).CombinedOutput()
+func (app *Application) ensureBuildExists() {
+	output, err := ocExec("get", "bc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := config.ocExec("new-build", "bbrowning/openshift-cloudfoundry-docker19",
+		newCmd := ocExec("new-build", "bbrowning/openshift-cloudfoundry-docker19",
 			"--binary=true", fmt.Sprint("--name=", app.Name))
 		fmt.Printf("==> Creating build with command: %s\n", strings.Join(newCmd.Args, " "))
-		output, err = newCmd.CombinedOutput()
-		fmt.Println(string(output))
 		// oc new-build sometimes gives a non-zero exit status for ignorable errors
-		// if err != nil {
-		// 	fmt.Fprintln(os.Stderr, err)
-		// 	os.Exit(1)
-		// }
+		output, _ = newCmd.CombinedOutput()
+		fmt.Println(string(output))
 	} else if err != nil {
-		config.exitWithOutputAndError(output, err)
+		exitWithOutputAndError(output, err)
 	} else {
 		fmt.Printf("==> Build configuration already exists for %s, skipping creating one\n", app.Name)
 	}
 }
 
-func (config *PushConfig) startBuild(app Application) {
+func (app *Application) startBuild() {
 	var pathArg string
 	if fi, err := os.Stat(app.Path); err != nil || fi.IsDir() {
 		pathArg = fmt.Sprint("--from-dir=", app.Path)
 	} else {
 		pathArg = fmt.Sprint("--from-file=", app.Path)
 	}
-	startBuildCmd := config.ocExec("start-build", app.Name, pathArg, "--follow")
+	startBuildCmd := ocExec("start-build", app.Name, pathArg, "--follow")
 	startBuildCmd.Stdout = os.Stdout
 	startBuildCmd.Stderr = os.Stderr
 	fmt.Printf("==> Starting build with command: %s\n", strings.Join(startBuildCmd.Args, " "))
 	err := startBuildCmd.Run()
 	if err != nil {
-		config.exitWithError(err)
+		exitWithError(err)
 	}
 }
 
-func (config *PushConfig) ensureAppExists(app Application) {
-	output, err := config.ocExec("get", "svc", app.Name).CombinedOutput()
+func (app *Application) ensureDeploymentExists() {
+	output, err := ocExec("get", "dc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := config.ocExec("new-app", app.Name)
-		fmt.Printf("==> Creating application with command: %s\n", strings.Join(newCmd.Args, " "))
+		var limits string
+		if app.Memory != "" {
+			limits = fmt.Sprint("--limits=memory=", app.Memory)
+		} else {
+			limits = ""
+		}
+		repoAndImage, err := ocExec("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
+		if err != nil {
+			exitWithOutputAndError(repoAndImage, err)
+		}
+		newCmd := ocExec("run", app.Name, fmt.Sprint("--image=", string(repoAndImage)), limits)
+		fmt.Printf("==> Creating deployment config with command: %s\n", strings.Join(newCmd.Args, " "))
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	} else if err != nil {
-		config.exitWithOutputAndError(output, err)
+		exitWithOutputAndError(output, err)
 	} else {
-		fmt.Printf("==> Application already exists for %s, skipping creating one\n", app.Name)
+		fmt.Printf("==> Deployment config already exists for %s, skipping creating one\n", app.Name)
 	}
 }
 
-func (config *PushConfig) ensureRouteExists(app Application) {
-	output, err := config.ocExec("get", "route", app.Name).CombinedOutput()
+func (app *Application) ensureServiceExists() {
+	output, err := ocExec("get", "svc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := config.ocExec("expose", fmt.Sprint("svc/", app.Name))
+		newCmd := ocExec("expose", "dc", app.Name, "--port=8080")
+		fmt.Printf("==> Creating service with command: %s\n", strings.Join(newCmd.Args, " "))
+		output, err = newCmd.CombinedOutput()
+		fmt.Println(string(output))
+		if err != nil {
+			exitWithError(err)
+		}
+	} else if err != nil {
+		exitWithOutputAndError(output, err)
+	} else {
+		fmt.Printf("==> Service already exists for %s, skipping creating one\n", app.Name)
+	}
+}
+
+func (app *Application) ensureRouteExists() {
+	output, err := ocExec("get", "route", app.Name).CombinedOutput()
+	if strings.Contains(string(output), "not found") {
+		newCmd := ocExec("expose", "svc", app.Name)
 		fmt.Printf("==> Creating route with command: %s\n", strings.Join(newCmd.Args, " "))
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	} else if err != nil {
-		config.exitWithOutputAndError(output, err)
+		exitWithOutputAndError(output, err)
 	} else {
 		fmt.Printf("==> Route already exists for %s, skipping creating one\n", app.Name)
 	}
 }
 
-func (config *PushConfig) displayRoute(app Application) {
-	output, err := config.ocExec("get", "route", app.Name, "-o", "template",
+func (app *Application) displayRoute() {
+	output, err := ocExec("get", "route", app.Name, "-o", "template",
 		"--template={{.spec.host}}").CombinedOutput()
 	if err != nil {
-		config.exitWithOutputAndError(output, err)
+		exitWithOutputAndError(output, err)
 	} else {
 		fmt.Printf("==> Your application is available at %s\n", output)
 	}
-}
-
-func (config *PushConfig) ocExec(args ...string) *exec.Cmd {
-	return exec.Command("oc", args...)
-}
-
-func (config *PushConfig) exitWithError(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
-}
-
-func (config *PushConfig) exitWithOutputAndError(output []byte, err error) {
-	fmt.Println(string(output))
-	config.exitWithError(err)
 }
 
 func (config *PushConfig) getManifestApps() ([]Application, error) {
@@ -309,6 +318,18 @@ func (config *PushConfig) getFlagsApp(args []string) (Application, error) {
 		app.Instances = config.Instances
 	}
 
+	if config.Memory != "" {
+		mem := strings.TrimSuffix(strings.ToUpper(config.Memory), "B")
+		matched, err := regexp.MatchString("^\\d+[EPTGMK]?$", mem)
+		if err != nil {
+			return app, err
+		}
+		if !matched {
+			return app, errors.New("Memory string must be in the format of 8690K, 256M, 256MB, 1G, 1GB, etc")
+		}
+		app.Memory = mem
+	}
+
 	if config.Path != "" {
 		app.Path = config.Path
 	}
@@ -316,7 +337,7 @@ func (config *PushConfig) getFlagsApp(args []string) (Application, error) {
 	return app, nil
 }
 
-func (config *PushConfig) mergeAppsFromManifestAndFlags(manifestApps []Application, flagsApp Application) ([]Application, error) {
+func mergeAppsFromManifestAndFlags(manifestApps []Application, flagsApp Application) ([]Application, error) {
 	var err error
 	var apps []Application
 
@@ -374,6 +395,20 @@ func addApp(apps *[]Application, app Application) error {
 
 	*apps = append(*apps, app)
 	return nil
+}
+
+func ocExec(args ...string) *exec.Cmd {
+	return exec.Command("oc", args...)
+}
+
+func exitWithError(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}
+
+func exitWithOutputAndError(output []byte, err error) {
+	fmt.Println(string(output))
+	exitWithError(err)
 }
 
 func debugf(format string, v ...interface{}) {
