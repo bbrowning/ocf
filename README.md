@@ -37,3 +37,13 @@ the application.
 
 You'll notice these are identical commands to deploying it on Cloud
 Foundry, except you replace `cf` with `ocf`.
+
+## Example usage with Cloud Foundry's Node.js sample
+
+Clone https://github.com/cloudfoundry-samples/cf-sample-app-nodejs
+somewhere locally and execute the following command inside its
+directory:
+
+    ocf push
+
+That's it!
