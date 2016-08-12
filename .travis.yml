@@ -1,0 +1,20 @@
+language: go
+go:
+- 1.6
+before_install:
+- go get github.com/mitchellh/gox
+- gox -build-toolchain
+- go get github.com/inconshreveable/mousetrap
+after_success:
+- gox -os="linux darwin windows" -arch="amd64" -output "dist/{{.OS}}_{{.Arch}}_{{.Dir}}"
+deploy:
+  provider: releases
+  api_key:
+    secure: SgsXxaYTrTD5ATJ3ibRFgcT+hr9n7y6QgpHuebJwq71vVK96qJUa7buYSI4L1TqJ5uChdGJOibWzsnvMdfKkfnSTpTr78CvMBPKL5qzyxRO4rWNeWM0U1MUjZW7Dc40qUDYe1APTyQzEY1J3TVNGJJx9zUTg6d8F4cAVfz0deBCW3iyR9ltDjrxUbeWQvRQoMPLsvqxgUO22z4McnlTXZwvH091by6EuScldHWFaof5YrKMCnl3NMvVLG5aNhSf/Y4lIuguexcYlFYginohBbljU+uQmTjlphGbrTs4KosIikyAWsIwys2JnqckJqTmG7xqfCzjCzhvmfBLrL/JOEXqyhTQm1EWoUlS3+Bk91hb2edwzsUMJdrMO+lYHaePjmZzJCABREOxDKwKQH4NaAmSw9qzx9ESELhb13+viDGsMoc+gtUfyWAt0q7WOk+gusEQ9Zj7vMTFyIIFXm/dWixkqDA1Nwr/dc20VChXwQQpO5hyAVgES0+Dd86aNl9lYxtfMiF2x4qMTs0I7wdFIS6rKGHd/958NN1pRikUkUmC9PT/LiUrSy4OVaGsyR5TelQ+3EqwY3+4YQhiyeLCbDoIsCXqCScU07ZReCe9LD03boBBzfOxrMQZtHmqD4xxvoTOt3vysoZhD7A/WKghkIQlAh84Cn+RwwoMUMkhgngM=
+  file:
+    - dist/linux_amd64_ocf
+    - dist/darwin_amd64_ocf
+    - dist/windows_amd64_ocf.exe
+  on:
+    repo: bbrowning/ocf
+    tags: true
