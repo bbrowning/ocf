@@ -198,16 +198,19 @@ func (app *Application) ensureDeploymentExists() {
 	output, err := ocExec("get", "dc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
 		var limits string
+		var env string
 		if app.Memory != "" {
 			limits = fmt.Sprint("--limits=memory=", app.Memory)
+			env = fmt.Sprint("--env=MEMORY_LIMIT=", app.Memory)
 		} else {
 			limits = ""
+			env = ""
 		}
 		repoAndImage, err := ocExec("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
 		if err != nil {
 			exitWithOutputAndError(repoAndImage, err)
 		}
-		newCmd := ocExec("run", app.Name, fmt.Sprint("--image=", string(repoAndImage)), limits)
+		newCmd := ocExec("run", app.Name, fmt.Sprint("--image=", string(repoAndImage)), limits, env)
 		fmt.Printf("==> Creating deployment config with command: %s\n", strings.Join(newCmd.Args, " "))
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
