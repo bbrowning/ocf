@@ -51,6 +51,7 @@ type PushConfig struct {
 	Disk         string
 	Memory       string
 	Path         string
+	Image        string
 }
 
 type Manifest struct {
@@ -58,13 +59,47 @@ type Manifest struct {
 }
 
 type Application struct {
-	Name      string `json:"name"`
-	Buildpack string `json:"buildpack"`
-	Command   string `json:"command"`
-	DiskQuota string `json:"disk_quota"`
-	Instances int    `json:"instances"`
-	Memory    string `json:"memory"`
-	Path      string `json:"path"`
+	Name      string   `json:"name"`
+	Buildpack string   `json:"buildpack"`
+	Command   string   `json:"command"`
+	DiskQuota string   `json:"disk_quota"`
+	Instances int      `json:"instances"`
+	Memory    string   `json:"memory"`
+	Path      string   `json:"path"`
+	Services  []string `json:"services"`
+	execer    Execer
+}
+
+type ExecCmd interface {
+	Run() error
+	CombinedOutput() ([]byte, error)
+	AttachStdIO()
+	ArgsString() string
+}
+
+type DefaultCmd struct {
+	*exec.Cmd
+}
+
+type Execer interface {
+	Oc(args ...string) ExecCmd
+}
+
+type DefaultExecer struct {
+}
+
+func (cmd *DefaultCmd) AttachStdIO() {
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+}
+
+func (cmd *DefaultCmd) ArgsString() string {
+	return strings.Join(cmd.Args, " ")
+}
+
+func (execer *DefaultExecer) Oc(args ...string) ExecCmd {
+	return &DefaultCmd{exec.Command("oc", args...)}
 }
 
 func init() {
@@ -86,13 +121,14 @@ func newPushCmd(commandName string) *cobra.Command {
 		},
 	}
 
-	// cmd.Flags().StringVarP(&config.Buildpack, "buildpack", "b", "", "Custom buildpack by name (e.g. my-buildpack) or Git URL (e.g. 'https://github.com/cloudfoundry/java-buildpack.git') or Git URL with a branch or tag (e.g. 'https://github.com/cloudfoundry/java-buildpack.git#v3.3.0' for 'v3.3.0' tag). To use built-in buildpacks only, specify 'default' or 'null'")
-	// cmd.Flags().StringVarP(&config.Command, "command", "c", "", "Startup command, set to null to reset to default start command")
+	cmd.Flags().StringVarP(&config.Buildpack, "buildpack", "b", "", "Custom buildpack by Git URL (e.g. 'https://github.com/cloudfoundry/java-buildpack.git') or Git URL with a branch or tag (e.g. 'https://github.com/cloudfoundry/java-buildpack.git#v3.3.0' for 'v3.3.0' tag). To use built-in buildpacks only, specify 'default' or 'null'")
+	cmd.Flags().StringVarP(&config.Command, "command", "c", "", "Startup command, set to null to reset to default start command")
 	cmd.Flags().StringVarP(&config.ManifestPath, "manifest-path", "f", "", "Path to manifest")
 	// cmd.Flags().IntVarP(&config.Instances, "instances", "i", 1, "Number of instances")
 	// cmd.Flags().StringVarP(&config.Disk, "disk", "k", "", "Disk limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Memory, "memory", "m", "", "Memory limit (e.g. 256M, 1024M, 1G)")
 	cmd.Flags().StringVarP(&config.Path, "path", "p", "", "Path to app directory or to a zip file of the contents of the app directory")
+	cmd.Flags().StringVarP(&config.Image, "image", "", "bbrowning/openshift-cloudfoundry-docker19", "Base Docker image to use when building and deploying applications")
 
 	return cmd
 }
@@ -128,7 +164,7 @@ func (config *PushConfig) Run(args []string) error {
 		// TODO: help user select the correct project instead of just
 		// assuming they've already done that
 		app.displayProject()
-		app.ensureBuildExists()
+		app.ensureBuildExists(config.Image)
 		app.startBuild()
 		app.ensureDeploymentExists()
 		app.ensureServiceExists()
@@ -140,12 +176,10 @@ func (config *PushConfig) Run(args []string) error {
 }
 
 func (app *Application) ensureLoggedIn() {
-	err := ocExec("whoami").Run()
+	err := app.execer.Oc("whoami").Run()
 	if err != nil {
-		loginCmd := ocExec("login")
-		loginCmd.Stdin = os.Stdin
-		loginCmd.Stdout = os.Stdout
-		loginCmd.Stderr = os.Stderr
+		loginCmd := app.execer.Oc("login")
+		loginCmd.AttachStdIO()
 		err = loginCmd.Run()
 		if err != nil {
 			exitWithError(err)
@@ -154,19 +188,18 @@ func (app *Application) ensureLoggedIn() {
 }
 
 func (app *Application) displayProject() {
-	output, err := ocExec("project").CombinedOutput()
+	output, err := app.execer.Oc("project").CombinedOutput()
 	fmt.Println(string(output))
 	if err != nil {
 		exitWithError(err)
 	}
 }
 
-func (app *Application) ensureBuildExists() {
-	output, err := ocExec("get", "bc", app.Name).CombinedOutput()
+func (app *Application) ensureBuildExists(image string) {
+	output, err := app.execer.Oc("get", "bc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := ocExec("new-build", "bbrowning/openshift-cloudfoundry-docker19",
-			"--binary=true", fmt.Sprint("--name=", app.Name))
-		fmt.Printf("==> Creating build with command: %s\n", strings.Join(newCmd.Args, " "))
+		newCmd := app.execer.Oc(app.createBuildArgs(image)...)
+		fmt.Printf("==> Creating build with command: %s\n", newCmd.ArgsString())
 		// oc new-build sometimes gives a non-zero exit status for ignorable errors
 		output, _ = newCmd.CombinedOutput()
 		fmt.Println(string(output))
@@ -177,6 +210,17 @@ func (app *Application) ensureBuildExists() {
 	}
 }
 
+func (app *Application) createBuildArgs(image string) []string {
+	var buildpack string
+	if app.Buildpack != "" {
+		buildpack = fmt.Sprint("BUILDPACK_URL=", app.Buildpack)
+	} else {
+		buildpack = ""
+	}
+	return []string{"new-build", image, "--binary=true",
+		fmt.Sprint("--name=", app.Name), buildpack}
+}
+
 func (app *Application) startBuild() {
 	var pathArg string
 	if fi, err := os.Stat(app.Path); err != nil || fi.IsDir() {
@@ -184,10 +228,9 @@ func (app *Application) startBuild() {
 	} else {
 		pathArg = fmt.Sprint("--from-file=", app.Path)
 	}
-	startBuildCmd := ocExec("start-build", app.Name, pathArg, "--follow")
-	startBuildCmd.Stdout = os.Stdout
-	startBuildCmd.Stderr = os.Stderr
-	fmt.Printf("==> Starting build with command: %s\n", strings.Join(startBuildCmd.Args, " "))
+	startBuildCmd := app.execer.Oc("start-build", app.Name, pathArg, "--follow")
+	startBuildCmd.AttachStdIO()
+	fmt.Printf("==> Starting build with command: %s\n", startBuildCmd.ArgsString())
 	err := startBuildCmd.Run()
 	if err != nil {
 		exitWithError(err)
@@ -195,23 +238,18 @@ func (app *Application) startBuild() {
 }
 
 func (app *Application) ensureDeploymentExists() {
-	output, err := ocExec("get", "dc", app.Name).CombinedOutput()
+	output, err := app.execer.Oc("get", "dc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		var limits string
-		var env string
-		if app.Memory != "" {
-			limits = fmt.Sprint("--limits=memory=", app.Memory)
-			env = fmt.Sprint("--env=MEMORY_LIMIT=", app.Memory)
-		} else {
-			limits = ""
-			env = ""
-		}
-		repoAndImage, err := ocExec("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
+		repoAndImage, err := app.execer.Oc("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
 		if err != nil {
 			exitWithOutputAndError(repoAndImage, err)
 		}
-		newCmd := ocExec("run", app.Name, fmt.Sprint("--image=", string(repoAndImage)), limits, env)
-		fmt.Printf("==> Creating deployment config with command: %s\n", strings.Join(newCmd.Args, " "))
+		env, err := app.envForServices()
+		if err != nil {
+			exitWithError(err)
+		}
+		newCmd := app.execer.Oc(app.createDeploymentArgs(string(repoAndImage), env)...)
+		fmt.Printf("==> Creating deployment config with command: %s\n", newCmd.ArgsString())
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
@@ -220,15 +258,77 @@ func (app *Application) ensureDeploymentExists() {
 	} else if err != nil {
 		exitWithOutputAndError(output, err)
 	} else {
-		fmt.Printf("==> Deployment config already exists for %s, skipping creating one\n", app.Name)
+		fmt.Printf("==> Deployment config already exists for %s, redeploying\n", app.Name)
+		output, err = app.execer.Oc("deploy", app.Name, "--latest").CombinedOutput()
+		if err != nil {
+			exitWithOutputAndError(output, err)
+		}
 	}
 }
 
+func (app *Application) envForServices() ([]string, error) {
+	var env []string
+	var serviceNames []string
+	if len(app.Services) > 0 {
+		for _, service := range app.Services {
+			envPrefix := strings.ToUpper(strings.Replace(service, "-", "_", -1))
+			serviceNames = append(serviceNames, envPrefix)
+			output, err := app.execer.Oc("env", "dc", service, "--list").CombinedOutput()
+			if err != nil {
+				return env, errors.New(fmt.Sprintf("Error: Bound service %s not found\n", service))
+			}
+			var label string
+			for _, line := range strings.Split(string(output), "\n") {
+				switch {
+				case strings.HasPrefix(line, "POSTGRESQL"):
+					label = "postgresql"
+				case strings.HasPrefix(line, "MYSQL"):
+					label = "mysql"
+				case strings.HasPrefix(line, "MONGODB"):
+					label = "mongodb"
+				}
+				switch {
+				case strings.Contains(line, "_USER="):
+					addServiceEnv(&env, envPrefix, "_USER", line)
+				case strings.Contains(line, "_PASSWORD="):
+					addServiceEnv(&env, envPrefix, "_PASSWORD", line)
+				case strings.Contains(line, "_DATABASE="):
+					addServiceEnv(&env, envPrefix, "_DATABASE", line)
+				}
+			}
+			env = append(env, fmt.Sprint(envPrefix, "_LABEL=", label, ""))
+		}
+		env = append(env, fmt.Sprint("CF_BOUND_SERVICES=", strings.Join(serviceNames, " ")))
+	}
+	return env, nil
+}
+
+func addServiceEnv(env *[]string, prefix string, suffix string, line string) {
+	val := strings.Split(line, "=")[1]
+	*env = append(*env, fmt.Sprint(prefix, suffix, "=", val))
+}
+
+func (app *Application) createDeploymentArgs(repoAndImage string, env []string) []string {
+	var limits string
+	if app.Memory != "" {
+		limits = fmt.Sprint("--limits=memory=", app.Memory)
+		env = append(env, fmt.Sprint("MEMORY_LIMIT=", app.Memory))
+	} else {
+		limits = ""
+	}
+	if app.Command != "" {
+		env = append(env, fmt.Sprint("CF_COMMAND=", app.Command))
+	}
+	envStr := fmt.Sprint("--env=", strings.Join(env, ","))
+	return []string{"run", app.Name, fmt.Sprint("--image=", repoAndImage),
+		limits, envStr}
+}
+
 func (app *Application) ensureServiceExists() {
-	output, err := ocExec("get", "svc", app.Name).CombinedOutput()
+	output, err := app.execer.Oc("get", "svc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := ocExec("expose", "dc", app.Name, "--port=8080")
-		fmt.Printf("==> Creating service with command: %s\n", strings.Join(newCmd.Args, " "))
+		newCmd := app.execer.Oc("expose", "dc", app.Name, "--port=8080")
+		fmt.Printf("==> Creating service with command: %s\n", newCmd.ArgsString())
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
@@ -242,10 +342,10 @@ func (app *Application) ensureServiceExists() {
 }
 
 func (app *Application) ensureRouteExists() {
-	output, err := ocExec("get", "route", app.Name).CombinedOutput()
+	output, err := app.execer.Oc("get", "route", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := ocExec("expose", "svc", app.Name)
-		fmt.Printf("==> Creating route with command: %s\n", strings.Join(newCmd.Args, " "))
+		newCmd := app.execer.Oc("expose", "svc", app.Name)
+		fmt.Printf("==> Creating route with command: %s\n", newCmd.ArgsString())
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
@@ -259,7 +359,7 @@ func (app *Application) ensureRouteExists() {
 }
 
 func (app *Application) displayRoute() {
-	output, err := ocExec("get", "route", app.Name, "-o", "template",
+	output, err := app.execer.Oc("get", "route", app.Name, "-o", "template",
 		"--template={{.spec.host}}").CombinedOutput()
 	if err != nil {
 		exitWithOutputAndError(output, err)
@@ -396,12 +496,12 @@ func addApp(apps *[]Application, app Application) error {
 		app.Path = cwd
 	}
 
+	if app.execer == nil {
+		app.execer = new(DefaultExecer)
+	}
+
 	*apps = append(*apps, app)
 	return nil
-}
-
-func ocExec(args ...string) *exec.Cmd {
-	return exec.Command("oc", args...)
 }
 
 func exitWithError(err error) {

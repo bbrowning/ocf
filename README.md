@@ -47,3 +47,18 @@ directory:
     ocf push
 
 That's it!
+
+## Example usage with Cloud Foundry's Rails sample
+
+Clone https://github.com/cloudfoundry-samples/rails_sample_app
+somewhere locally and execute the following command inside its
+directory:
+
+    oc new-app postgresql --name=rails-postgres --env=POSTGRESQL_USER=foo,POSTGRESQL_PASSWORD=barbaz123,POSTGRESQL_DATABASE=rails_sample
+    ocf push
+
+The application's manifest.yml tells it to bind to the
+`rails-postgres` service. We use that to wire everything up and
+populate `$VCAP_SERVICES` inside the Rails app so that it can find our
+PostgreSQL instance. This means the `cf-autoconfig` gem used in this
+sample application works on OpenShift as well.
