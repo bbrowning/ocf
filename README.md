@@ -17,10 +17,12 @@ Foundry environment will apply when using this tool.
 
 ## Prerequisites
 
-You'll need a built copy of this tool as well as the `oc` binaries
-from OpenShift in your `$PATH`. Instructions on how to do that should
-go here. Until then, if you're familiar with Go and Openshift it
-shouldn't be hard to figure out how to do this.
+Download the latest release of this tool for your platform from
+https://github.com/bbrowning/ocf/releases and rename it to
+`ocf`. You'll also need recent OpenShift Origin client tools, which
+can be downloaded from
+https://github.com/openshift/origin/releases. Make sure the `oc`
+binary from that download gets in your $PATH.
 
 ## Example usage with Cloud Foundry's Spring Music sample
 
@@ -62,3 +64,12 @@ The application's manifest.yml tells it to bind to the
 populate `$VCAP_SERVICES` inside the Rails app so that it can find our
 PostgreSQL instance. This means the `cf-autoconfig` gem used in this
 sample application works on OpenShift as well.
+
+
+## Releasing
+
+    git tag -a v<version> -m "Release <version>"
+    git push --tags origin master
+
+Travis will build and push the released binaries to GitHub. Edit the
+release notes in the GitHub UI.
