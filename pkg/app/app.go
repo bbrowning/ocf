@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
-	"github.com/bbrowning/ocf/pkg/exec"
+	"github.com/bbrowning/ocf/pkg/oc"
 )
 
 type Application struct {
@@ -18,10 +19,11 @@ type Application struct {
 	Memory    string   `json:"memory"`
 	Path      string   `json:"path"`
 	Services  []string `json:"services"`
-	execer    exec.Execer
+	oc        oc.Oc
 }
 
 func (app *Application) Push(image string) {
+	app.setupDefaults()
 	app.ensureLoggedIn()
 	// TODO: help user select the correct project instead of just
 	// assuming they've already done that
@@ -34,36 +36,75 @@ func (app *Application) Push(image string) {
 	app.displayRoute()
 }
 
-func (app *Application) SetupDefaults() {
-	if app.execer == nil {
-		app.execer = new(exec.DefaultExecer)
+func (app *Application) BindService(service string) error {
+	app.setupDefaults()
+	app.ensureLoggedIn()
+	app.displayProject()
+
+	appExists, err := app.deploymentExists()
+	if err != nil {
+		return err
+	}
+	if !appExists {
+		return errors.New(fmt.Sprintf("Error: Application %s not found\n", app.Name))
+	}
+
+	envPrefix := envPrefixFromService(service)
+	env, err := app.envForServiceBinding(service, envPrefix)
+	if err != nil {
+		return err
+	}
+
+	appEnv, err := app.oc.Env("dc", app.Name)
+	if err != nil {
+		return err
+	}
+
+	boundServices := appEnv["CF_BOUND_SERVICES"]
+	alreadyBound, err := regexp.MatchString(fmt.Sprint("\\s?", envPrefix, "\\s?"), boundServices)
+	if alreadyBound {
+		return errors.New(fmt.Sprintf("Error: Service %s already bound to application %s\n", service, app.Name))
+	}
+	boundServices = strings.TrimLeft(fmt.Sprint(boundServices, " ", envPrefix), " ")
+
+	env[fmt.Sprint("CF_BOUND_SERVICES")] = boundServices
+
+	err = app.oc.SetEnv("dc", app.Name, env)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (app *Application) setupDefaults() {
+	if app.oc == nil {
+		app.oc = new(oc.DefaultOc)
 	}
 }
 
 func (app *Application) ensureLoggedIn() {
-	err := app.execer.Oc("whoami").Run()
-	if err != nil {
-		loginCmd := app.execer.Oc("login")
+	loggedIn := app.oc.LoggedIn()
+	if !loggedIn {
+		loginCmd := app.oc.Exec("login")
 		loginCmd.AttachStdIO()
-		err = loginCmd.Run()
+		err := loginCmd.Run()
 		if err != nil {
 			exitWithError(err)
 		}
 	}
 }
 
-func (app *Application) displayProject() {
-	output, err := app.execer.Oc("project").CombinedOutput()
-	fmt.Println(string(output))
-	if err != nil {
-		exitWithError(err)
-	}
+func (app *Application) displayProject() error {
+	project, err := app.oc.Project()
+	fmt.Printf("Using project %s\n", project)
+	return err
 }
 
 func (app *Application) ensureBuildExists(image string) {
-	output, err := app.execer.Oc("get", "bc", app.Name).CombinedOutput()
+	output, err := app.oc.Exec("get", "bc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := app.execer.Oc(app.createBuildArgs(image)...)
+		newCmd := app.oc.Exec(app.createBuildArgs(image)...)
 		fmt.Printf("==> Creating build with command: %s\n", newCmd.ArgsString())
 		// oc new-build sometimes gives a non-zero exit status for ignorable errors
 		output, _ = newCmd.CombinedOutput()
@@ -93,7 +134,7 @@ func (app *Application) startBuild() {
 	} else {
 		pathArg = fmt.Sprint("--from-file=", app.Path)
 	}
-	startBuildCmd := app.execer.Oc("start-build", app.Name, pathArg, "--follow")
+	startBuildCmd := app.oc.Exec("start-build", app.Name, pathArg, "--follow")
 	startBuildCmd.AttachStdIO()
 	fmt.Printf("==> Starting build with command: %s\n", startBuildCmd.ArgsString())
 	err := startBuildCmd.Run()
@@ -102,75 +143,91 @@ func (app *Application) startBuild() {
 	}
 }
 
+func (app *Application) deploymentExists() (bool, error) {
+	return app.oc.Exists("dc", app.Name)
+}
+
 func (app *Application) ensureDeploymentExists() {
-	output, err := app.execer.Oc("get", "dc", app.Name).CombinedOutput()
-	if strings.Contains(string(output), "not found") {
-		repoAndImage, err := app.execer.Oc("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
+	exists, err := app.deploymentExists()
+	if err != nil {
+		exitWithError(err)
+	}
+	if !exists {
+		repoAndImage, err := app.oc.Exec("get", "is", app.Name, "-o", "template", "--template={{.status.dockerImageRepository}}").CombinedOutput()
 		if err != nil {
 			exitWithOutputAndError(repoAndImage, err)
 		}
-		env, err := app.envForServices()
+		env, err := app.envForServiceBindings()
 		if err != nil {
 			exitWithError(err)
 		}
-		newCmd := app.execer.Oc(app.createDeploymentArgs(string(repoAndImage), env)...)
+		newCmd := app.oc.Exec(app.createDeploymentArgs(string(repoAndImage), env)...)
 		fmt.Printf("==> Creating deployment config with command: %s\n", newCmd.ArgsString())
-		output, err = newCmd.CombinedOutput()
+		output, err := newCmd.CombinedOutput()
 		fmt.Println(string(output))
 		if err != nil {
 			exitWithError(err)
 		}
-	} else if err != nil {
-		exitWithOutputAndError(output, err)
 	} else {
 		fmt.Printf("==> Deployment config already exists for %s, redeploying\n", app.Name)
-		output, err = app.execer.Oc("deploy", app.Name, "--latest").CombinedOutput()
+		output, err := app.oc.Exec("deploy", app.Name, "--latest").CombinedOutput()
 		if err != nil {
 			exitWithOutputAndError(output, err)
 		}
 	}
 }
 
-func (app *Application) envForServices() ([]string, error) {
+func (app *Application) envForServiceBindings() ([]string, error) {
 	var env []string
 	var serviceNames []string
 	if len(app.Services) > 0 {
 		for _, service := range app.Services {
-			envPrefix := strings.ToUpper(strings.Replace(service, "-", "_", -1))
+			envPrefix := envPrefixFromService(service)
 			serviceNames = append(serviceNames, envPrefix)
-			output, err := app.execer.Oc("env", "dc", service, "--list").CombinedOutput()
+			serviceEnv, err := app.envForServiceBinding(service, envPrefix)
 			if err != nil {
-				return env, errors.New(fmt.Sprintf("Error: Bound service %s not found\n", service))
+				return nil, err
 			}
-			var label string
-			for _, line := range strings.Split(string(output), "\n") {
-				switch {
-				case strings.HasPrefix(line, "POSTGRESQL"):
-					label = "postgresql"
-				case strings.HasPrefix(line, "MYSQL"):
-					label = "mysql"
-				case strings.HasPrefix(line, "MONGODB"):
-					label = "mongodb"
-				}
-				switch {
-				case strings.Contains(line, "_USER="):
-					addServiceEnv(&env, envPrefix, "_USER", line)
-				case strings.Contains(line, "_PASSWORD="):
-					addServiceEnv(&env, envPrefix, "_PASSWORD", line)
-				case strings.Contains(line, "_DATABASE="):
-					addServiceEnv(&env, envPrefix, "_DATABASE", line)
-				}
+			for key, value := range serviceEnv {
+				env = append(env, fmt.Sprint(key, "=", value))
 			}
-			env = append(env, fmt.Sprint(envPrefix, "_LABEL=", label, ""))
 		}
 		env = append(env, fmt.Sprint("CF_BOUND_SERVICES=", strings.Join(serviceNames, " ")))
 	}
 	return env, nil
 }
 
-func addServiceEnv(env *[]string, prefix string, suffix string, line string) {
-	val := strings.Split(line, "=")[1]
-	*env = append(*env, fmt.Sprint(prefix, suffix, "=", val))
+func (app *Application) envForServiceBinding(service string, envPrefix string) (map[string]string, error) {
+	env := make(map[string]string)
+	serviceEnv, err := app.oc.Env("dc", service)
+	if err != nil {
+		return nil, err
+	}
+	var label string
+	for key, value := range serviceEnv {
+		switch {
+		case strings.HasPrefix(key, "POSTGRESQL"):
+			label = "postgresql"
+		case strings.HasPrefix(key, "MYSQL"):
+			label = "mysql"
+		case strings.HasPrefix(key, "MONGODB"):
+			label = "mongodb"
+		}
+		switch {
+		case strings.HasSuffix(key, "_USER"):
+			env[fmt.Sprint(envPrefix, "_USER")] = value
+		case strings.HasSuffix(key, "_PASSWORD"):
+			env[fmt.Sprint(envPrefix, "_PASSWORD")] = value
+		case strings.HasSuffix(key, "_DATABASE"):
+			env[fmt.Sprint(envPrefix, "_DATABASE")] = value
+		}
+	}
+	env[fmt.Sprint(envPrefix, "_LABEL")] = label
+	return env, nil
+}
+
+func envPrefixFromService(service string) string {
+	return strings.ToUpper(strings.Replace(service, "-", "_", -1))
 }
 
 func (app *Application) createDeploymentArgs(repoAndImage string, env []string) []string {
@@ -190,9 +247,9 @@ func (app *Application) createDeploymentArgs(repoAndImage string, env []string) 
 }
 
 func (app *Application) ensureServiceExists() {
-	output, err := app.execer.Oc("get", "svc", app.Name).CombinedOutput()
+	output, err := app.oc.Exec("get", "svc", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := app.execer.Oc("expose", "dc", app.Name, "--port=8080")
+		newCmd := app.oc.Exec("expose", "dc", app.Name, "--port=8080")
 		fmt.Printf("==> Creating service with command: %s\n", newCmd.ArgsString())
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
@@ -207,9 +264,9 @@ func (app *Application) ensureServiceExists() {
 }
 
 func (app *Application) ensureRouteExists() {
-	output, err := app.execer.Oc("get", "route", app.Name).CombinedOutput()
+	output, err := app.oc.Exec("get", "route", app.Name).CombinedOutput()
 	if strings.Contains(string(output), "not found") {
-		newCmd := app.execer.Oc("expose", "svc", app.Name)
+		newCmd := app.oc.Exec("expose", "svc", app.Name)
 		fmt.Printf("==> Creating route with command: %s\n", newCmd.ArgsString())
 		output, err = newCmd.CombinedOutput()
 		fmt.Println(string(output))
@@ -224,7 +281,7 @@ func (app *Application) ensureRouteExists() {
 }
 
 func (app *Application) displayRoute() {
-	output, err := app.execer.Oc("get", "route", app.Name, "-o", "template",
+	output, err := app.oc.Exec("get", "route", app.Name, "-o", "template",
 		"--template={{.spec.host}}").CombinedOutput()
 	if err != nil {
 		exitWithOutputAndError(output, err)

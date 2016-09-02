@@ -66,6 +66,15 @@ PostgreSQL instance. This means the `cf-autoconfig` gem used in this
 sample application works on OpenShift as well.
 
 
+## Testing
+
+    go test -v ./...
+
+To also generate code coverage reports:
+
+    ./script/coverage --html
+
+
 ## Releasing
 
     git tag -a v<version> -m "Release <version>"

@@ -243,8 +243,6 @@ func addApp(apps *[]app.Application, app app.Application) error {
 		return errors.New("App name is a required field")
 	}
 
-	app.SetupDefaults()
-
 	if app.Path == "" {
 		cwd, err := os.Getwd()
 		if err != nil {

@@ -4,10 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bbrowning/ocf/pkg/exec"
-
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+
+	"github.com/bbrowning/ocf/pkg/mocks"
 )
 
 func TestCreateBuildArgs(t *testing.T) {
@@ -30,55 +29,72 @@ func TestCreateDeploymentArgs(t *testing.T) {
 }
 
 func TestEnvForServicesWithPostgres(t *testing.T) {
-	execer := new(MockExecer)
-	cmd := new(MockCmd)
-	app := Application{execer: execer}
+	oc := new(mocks.Oc)
+	app := Application{oc: oc}
 	app.Services = []string{"rails-postgres"}
-	execer.On("Oc", []string{"env", "dc", "rails-postgres", "--list"}).Return(cmd)
-	cmd.On("CombinedOutput").Return([]byte("POSTGRESQL_USER=foo\nPOSTGRESQL_PASSWORD=bar\nPOSTGRESQL_DATABASE=baz"), nil)
-	env, err := app.envForServices()
+	mockEnv := map[string]string{
+		"POSTGRESQL_USER":     "foo",
+		"POSTGRESQL_PASSWORD": "bar",
+		"POSTGRESQL_DATABASE": "baz",
+	}
+	oc.On("Env", "dc", "rails-postgres").Return(mockEnv, nil)
+	env, err := app.envForServiceBindings()
 	assert.Nil(t, err)
 	assertArgsContains(t, env, "RAILS_POSTGRES_LABEL=postgresql")
 	assertArgsContains(t, env, "RAILS_POSTGRES_USER=foo")
 	assertArgsContains(t, env, "RAILS_POSTGRES_PASSWORD=bar")
 	assertArgsContains(t, env, "RAILS_POSTGRES_DATABASE=baz")
 	assertArgsContains(t, env, "CF_BOUND_SERVICES=RAILS_POSTGRES")
-	execer.AssertExpectations(t)
-	cmd.AssertExpectations(t)
+	oc.AssertExpectations(t)
+}
+
+func TestEnvForServicesWithMysql(t *testing.T) {
+	oc := new(mocks.Oc)
+	app := Application{oc: oc}
+	app.Services = []string{"rails-mysql"}
+	mockEnv := map[string]string{
+		"MYSQL_USER":     "foo",
+		"MYSQL_PASSWORD": "bar",
+		"MYSQL_DATABASE": "baz",
+	}
+	oc.On("Env", "dc", "rails-mysql").Return(mockEnv, nil)
+	env, err := app.envForServiceBindings()
+	assert.Nil(t, err)
+	assertArgsContains(t, env, "RAILS_MYSQL_LABEL=mysql")
+	assertArgsContains(t, env, "RAILS_MYSQL_USER=foo")
+	assertArgsContains(t, env, "RAILS_MYSQL_PASSWORD=bar")
+	assertArgsContains(t, env, "RAILS_MYSQL_DATABASE=baz")
+	assertArgsContains(t, env, "CF_BOUND_SERVICES=RAILS_MYSQL")
+	oc.AssertExpectations(t)
+}
+
+func TestBindServiceSimpleHappyPath(t *testing.T) {
+	oc := mocks.NewMockOc()
+	app := Application{oc: oc, Name: "foo"}
+
+	serviceEnv := map[string]string{
+		"MYSQL_USER": "bar",
+	}
+
+	existingEnv := map[string]string{
+		"CF_BOUND_SERVICES": "SOME_SERVICE",
+	}
+
+	oc.On("Exists", "dc", "foo").Return(true, nil)
+	oc.On("Env", "dc", "test-service").Return(serviceEnv, nil)
+	oc.On("Env", "dc", "foo").Return(existingEnv, nil)
+
+	expectedEnv := map[string]string{
+		"TEST_SERVICE_USER":  "bar",
+		"TEST_SERVICE_LABEL": "mysql",
+		"CF_BOUND_SERVICES":  "SOME_SERVICE TEST_SERVICE",
+	}
+	oc.On("SetEnv", "dc", "foo", expectedEnv).Return(nil)
+
+	app.BindService("test-service")
+	oc.Execer.AssertExpectations(t)
 }
 
 func assertArgsContains(t *testing.T, args []string, expected string) {
 	assert.Contains(t, strings.Join(args, " "), expected)
-}
-
-type MockExecer struct {
-	mock.Mock
-}
-
-func (execer *MockExecer) Oc(args ...string) exec.ExecCmd {
-	mockArgs := execer.Called(args)
-	return mockArgs.Get(0).(exec.ExecCmd)
-}
-
-type MockCmd struct {
-	mock.Mock
-}
-
-func (cmd *MockCmd) Run() error {
-	args := cmd.Called()
-	return args.Error(1)
-}
-
-func (cmd *MockCmd) CombinedOutput() ([]byte, error) {
-	args := cmd.Called()
-	return args.Get(0).([]byte), args.Error(1)
-}
-
-func (cmd *MockCmd) AttachStdIO() {
-	cmd.Called()
-}
-
-func (cmd *MockCmd) ArgsString() string {
-	args := cmd.Called()
-	return args.String(0)
 }
