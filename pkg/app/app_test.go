@@ -91,8 +91,34 @@ func TestBindServiceSimpleHappyPath(t *testing.T) {
 	}
 	oc.On("SetEnv", "dc", "foo", expectedEnv).Return(nil)
 
-	app.BindService("test-service")
+	err := app.BindService("test-service")
+	assert.Nil(t, err)
 	oc.Execer.AssertExpectations(t)
+}
+
+func TestUnbindServiceHappyPath(t *testing.T) {
+	oc := mocks.NewMockOc()
+	app := Application{oc: oc, Name: "foo"}
+
+	existingEnv := map[string]string{
+		"FOO":                   "bar",
+		"CF_BOUND_SERVICES":     "TEST_SERVICE SOME_SERVICE",
+		"TEST_SERVICE_LABEL":    "test-service",
+		"TEST_SERVICE_DATABASE": "test-database",
+	}
+
+	oc.On("Exists", "dc", "foo").Return(true, nil)
+	oc.On("Env", "dc", "foo").Return(existingEnv, nil)
+
+	expectedEnv := map[string]string{
+		"CF_BOUND_SERVICES":     "SOME_SERVICE",
+		"TEST_SERVICE_LABEL":    "-",
+		"TEST_SERVICE_DATABASE": "-",
+	}
+	oc.On("SetEnv", "dc", "foo", expectedEnv).Return(nil)
+
+	err := app.UnbindService("test-service")
+	assert.Nil(t, err)
 }
 
 func assertArgsContains(t *testing.T, args []string, expected string) {

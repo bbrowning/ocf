@@ -99,7 +99,8 @@ func TestSetEnvHappyPath(t *testing.T) {
 		argsStr := strings.Join(args, " ")
 		return strings.HasPrefix(argsStr, "env dc foo") &&
 			strings.Contains(argsStr, "FOO=bar") &&
-			strings.Contains(argsStr, "BAZ=blah")
+			strings.Contains(argsStr, "BAZ=blah") &&
+			strings.Contains(argsStr, "DELETED-")
 	})).Return(cmd)
 	cmd.On("CombinedOutput").Return([]byte(""), nil)
 	oc := &DefaultOc{
@@ -107,8 +108,9 @@ func TestSetEnvHappyPath(t *testing.T) {
 	}
 
 	err := oc.SetEnv("dc", "foo", map[string]string{
-		"FOO": "bar",
-		"BAZ": "blah",
+		"FOO":     "bar",
+		"BAZ":     "blah",
+		"DELETED": "-",
 	})
 	assert.Nil(t, err)
 	execer.AssertExpectations(t)

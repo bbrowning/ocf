@@ -40,6 +40,19 @@ the application.
 You'll notice these are identical commands to deploying it on Cloud
 Foundry, except you replace `cf` with `ocf`.
 
+Want to switch from the default in-memory database to another, like
+MySQL?
+
+    oc new-app mysql --name=spring-mysql --env=MYSQL_USER=foo,MYSQL_PASSWORD=barbaz123,MYSQL_DATABASE=spring_music
+    ocf bind-service spring-music spring-mysql
+
+The first command creates a new MySQL server and the second command
+emulates `cf bind-service` to bind that MySQL server to your
+application. The application should automatically redeploy after the
+second command and come back up (within a few minutes) connected to
+your MySQL database. You can confirm via the little 'i' button in the
+top right of the Spring Music green header bar.
+
 ## Example usage with Cloud Foundry's Node.js sample
 
 Clone https://github.com/cloudfoundry-samples/cf-sample-app-nodejs

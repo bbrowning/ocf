@@ -63,7 +63,13 @@ func (oc *DefaultOc) Env(objType string, name string) (map[string]string, error)
 func (oc *DefaultOc) SetEnv(objType string, name string, env map[string]string) error {
 	envList := []string{}
 	for key, value := range env {
-		envList = append(envList, fmt.Sprint(key, "=", value))
+		var envArg string
+		if value == "-" {
+			envArg = fmt.Sprint(key, value)
+		} else {
+			envArg = fmt.Sprint(key, "=", value)
+		}
+		envList = append(envList, envArg)
 	}
 	execArgs := []string{"env", objType, name}
 	execArgs = append(execArgs, envList...)

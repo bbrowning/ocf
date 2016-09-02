@@ -22,6 +22,8 @@ type Application struct {
 	oc        oc.Oc
 }
 
+const cf_bound_services string = "CF_BOUND_SERVICES"
+
 func (app *Application) Push(image string) {
 	app.setupDefaults()
 	app.ensureLoggedIn()
@@ -60,18 +62,60 @@ func (app *Application) BindService(service string) error {
 		return err
 	}
 
-	boundServices := appEnv["CF_BOUND_SERVICES"]
+	boundServices := appEnv[cf_bound_services]
 	alreadyBound, err := regexp.MatchString(fmt.Sprint("\\s?", envPrefix, "\\s?"), boundServices)
 	if alreadyBound {
 		return errors.New(fmt.Sprintf("Error: Service %s already bound to application %s\n", service, app.Name))
 	}
 	boundServices = strings.TrimLeft(fmt.Sprint(boundServices, " ", envPrefix), " ")
 
-	env[fmt.Sprint("CF_BOUND_SERVICES")] = boundServices
+	env[cf_bound_services] = boundServices
 
 	err = app.oc.SetEnv("dc", app.Name, env)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (app *Application) UnbindService(service string) error {
+	app.setupDefaults()
+	app.ensureLoggedIn()
+	app.displayProject()
+
+	appExists, err := app.deploymentExists()
+	if err != nil {
+		return err
+	}
+	if !appExists {
+		return errors.New(fmt.Sprintf("Error: Application %s not found\n", app.Name))
+	}
+
+	envPrefix := envPrefixFromService(service)
+	appEnv, err := app.oc.Env("dc", app.Name)
+	if err != nil {
+		return err
+	}
+
+	newEnv := make(map[string]string)
+
+	for key, _ := range appEnv {
+		if strings.HasPrefix(key, envPrefix) {
+			newEnv[key] = "-"
+		}
+	}
+
+	if strings.Contains(appEnv[cf_bound_services], envPrefix) {
+		newEnv[cf_bound_services] = strings.Trim(
+			strings.Replace(appEnv[cf_bound_services], envPrefix, "", -1), " ")
+
+		err = app.oc.SetEnv("dc", app.Name, newEnv)
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New(fmt.Sprintf("Error: Service %s not bound to application %s\n", service, app.Name))
 	}
 
 	return nil
@@ -192,7 +236,7 @@ func (app *Application) envForServiceBindings() ([]string, error) {
 				env = append(env, fmt.Sprint(key, "=", value))
 			}
 		}
-		env = append(env, fmt.Sprint("CF_BOUND_SERVICES=", strings.Join(serviceNames, " ")))
+		env = append(env, fmt.Sprint(cf_bound_services, "=", strings.Join(serviceNames, " ")))
 	}
 	return env, nil
 }
