@@ -62,6 +62,28 @@ func TestExistsError(t *testing.T) {
 	})
 }
 
+func TestNewBuild(t *testing.T) {
+	execArgs := []string{"new-build", "my-image", "--binary=true", "--name=foo"}
+	withSingleExec(t, execArgs, func(oc *DefaultOc, cmd *mocks.ExecCmd) {
+		cmd.On("CombinedOutput").Return([]byte(""), nil)
+		err := oc.NewBuild("my-image", "foo", make(map[string]string))
+		assert.Nil(t, err)
+	})
+}
+
+func TestNewBuildWithEnv(t *testing.T) {
+	execArgs := []string{"new-build", "my-image", "--binary=true", "--name=foo",
+		"BUILDPACK_URL=foo"}
+	env := map[string]string{
+		"BUILDPACK_URL": "foo",
+	}
+	withSingleExec(t, execArgs, func(oc *DefaultOc, cmd *mocks.ExecCmd) {
+		cmd.On("CombinedOutput").Return([]byte(""), nil)
+		err := oc.NewBuild("my-image", "foo", env)
+		assert.Nil(t, err)
+	})
+}
+
 func TestEnvHappyPath(t *testing.T) {
 	execArgs := []string{"env", "dc", "foo", "--list"}
 	withSingleExec(t, execArgs, func(oc *DefaultOc, cmd *mocks.ExecCmd) {

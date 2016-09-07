@@ -31,6 +31,11 @@ func (oc *Oc) Exists(objType string, name string) (bool, error) {
 	return args.Bool(0), args.Error(1)
 }
 
+func (oc *Oc) NewBuild(image string, name string, env map[string]string) error {
+	args := oc.Called(image, name, env)
+	return args.Error(0)
+}
+
 func (oc *Oc) Env(objType string, name string) (map[string]string, error) {
 	args := oc.Called(objType, name)
 	return args.Get(0).(map[string]string), args.Error(1)

@@ -10,9 +10,10 @@ import (
 
 type Oc interface {
 	LoggedIn() bool
-	Env(string, string) (map[string]string, error)
 	Project() (string, error)
 	Exists(string, string) (bool, error)
+	NewBuild(string, string, map[string]string) error
+	Env(string, string) (map[string]string, error)
 	SetEnv(string, string, map[string]string) error
 	Exec(args ...string) exec.ExecCmd
 }
@@ -45,6 +46,17 @@ func (oc *DefaultOc) Exists(objType string, name string) (bool, error) {
 	}
 }
 
+func (oc *DefaultOc) NewBuild(image string, name string, env map[string]string) error {
+	args := []string{"new-build", image, "--binary=true", fmt.Sprint("--name=", name)}
+	args = append(args, envToSlice(env)...)
+	cmd := oc.Exec(args...)
+	fmt.Printf("==> Creating build with command: %s\n", cmd.ArgsString())
+	// oc new-build sometimes gives a non-zero exit status for ignorable errors
+	output, _ := cmd.CombinedOutput()
+	fmt.Println(string(output))
+	return nil
+}
+
 func (oc *DefaultOc) Env(objType string, name string) (map[string]string, error) {
 	var env = make(map[string]string)
 	output, err := oc.Exec("env", objType, name, "--list").CombinedOutput()
@@ -61,18 +73,8 @@ func (oc *DefaultOc) Env(objType string, name string) (map[string]string, error)
 }
 
 func (oc *DefaultOc) SetEnv(objType string, name string, env map[string]string) error {
-	envList := []string{}
-	for key, value := range env {
-		var envArg string
-		if value == "-" {
-			envArg = fmt.Sprint(key, value)
-		} else {
-			envArg = fmt.Sprint(key, "=", value)
-		}
-		envList = append(envList, envArg)
-	}
 	execArgs := []string{"env", objType, name}
-	execArgs = append(execArgs, envList...)
+	execArgs = append(execArgs, envToSlice(env)...)
 	envCmd := oc.Exec(execArgs...)
 	fmt.Printf("==> Updating environment variables with command: %s\n", envCmd.ArgsString())
 	output, err := envCmd.CombinedOutput()
@@ -87,4 +89,18 @@ func (oc *DefaultOc) Exec(args ...string) exec.ExecCmd {
 		oc.execer = new(exec.DefaultExecer)
 	}
 	return oc.execer.Oc(args...)
+}
+
+func envToSlice(env map[string]string) []string {
+	envSlice := []string{}
+	for key, value := range env {
+		var envArg string
+		if value == "-" {
+			envArg = fmt.Sprint(key, value)
+		} else {
+			envArg = fmt.Sprint(key, "=", value)
+		}
+		envSlice = append(envSlice, envArg)
+	}
+	return envSlice
 }

@@ -1,18 +1,61 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 
 	"github.com/bbrowning/ocf/pkg/mocks"
 )
 
-func TestCreateBuildArgs(t *testing.T) {
-	app := Application{Buildpack: "buildpack"}
-	args := app.createBuildArgs("image")
-	assert.Equal(t, "BUILDPACK_URL=buildpack", args[len(args)-1])
+func TestEnsureBuildExistsWhenDoesnt(t *testing.T) {
+	oc := new(mocks.Oc)
+	oc.On("Exists", "bc", "foo").Return(false, nil)
+	oc.On("NewBuild", "my-image", "foo", mock.AnythingOfType("map[string]string")).Return(nil)
+	app := Application{oc: oc, Name: "foo"}
+	app.ensureBuildExists("my-image")
+	oc.AssertExpectations(t)
+}
+
+func TestEnsureBuildExistsWhenDoesntWithBuildpack(t *testing.T) {
+	oc := new(mocks.Oc)
+	oc.On("Exists", "bc", "foo").Return(false, nil)
+	oc.On("NewBuild", "my-image", "foo", map[string]string{BuildpackUrl: "bp"}).Return(nil)
+	app := Application{oc: oc, Name: "foo", Buildpack: "bp"}
+	app.ensureBuildExists("my-image")
+	oc.AssertExpectations(t)
+}
+
+func TestEnsureBuildExistsDoesntSetEnvIfNotChanged(t *testing.T) {
+	oc := new(mocks.Oc)
+	oc.On("Exists", "bc", "foo").Return(true, nil)
+	currentEnv := map[string]string{
+		BuildpackUrl: "bp",
+	}
+	oc.On("Env", "bc", "foo").Return(currentEnv, nil)
+	app := Application{oc: oc, Name: "foo", Buildpack: "bp"}
+	app.ensureBuildExists("my-image")
+	oc.AssertExpectations(t)
+}
+
+func TestEnsureBuildExistsCanUpdateBuildpack(t *testing.T) {
+	oc := new(mocks.Oc)
+	oc.On("Exists", "bc", "foo").Return(true, nil)
+	currentEnv := map[string]string{
+		BuildpackUrl: "bp1",
+	}
+	oc.On("Env", "bc", "foo").Return(currentEnv, nil)
+	expectedEnv := map[string]string{
+		BuildpackUrl: "bp2",
+	}
+	oc.On("SetEnv", "bc", "foo", expectedEnv).Return(nil)
+
+	app := Application{oc: oc, Name: "foo", Buildpack: "bp2"}
+	app.ensureBuildExists("my-image")
+	oc.AssertExpectations(t)
 }
 
 func TestCreateDeploymentArgs(t *testing.T) {
@@ -44,7 +87,7 @@ func TestEnvForServicesWithPostgres(t *testing.T) {
 	assertArgsContains(t, env, "RAILS_POSTGRES_USER=foo")
 	assertArgsContains(t, env, "RAILS_POSTGRES_PASSWORD=bar")
 	assertArgsContains(t, env, "RAILS_POSTGRES_DATABASE=baz")
-	assertArgsContains(t, env, "CF_BOUND_SERVICES=RAILS_POSTGRES")
+	assertArgsContains(t, env, fmt.Sprint(BoundServices, "=RAILS_POSTGRES"))
 	oc.AssertExpectations(t)
 }
 
@@ -64,7 +107,7 @@ func TestEnvForServicesWithMysql(t *testing.T) {
 	assertArgsContains(t, env, "RAILS_MYSQL_USER=foo")
 	assertArgsContains(t, env, "RAILS_MYSQL_PASSWORD=bar")
 	assertArgsContains(t, env, "RAILS_MYSQL_DATABASE=baz")
-	assertArgsContains(t, env, "CF_BOUND_SERVICES=RAILS_MYSQL")
+	assertArgsContains(t, env, fmt.Sprint(BoundServices, "=RAILS_MYSQL"))
 	oc.AssertExpectations(t)
 }
 
@@ -77,7 +120,7 @@ func TestBindServiceSimpleHappyPath(t *testing.T) {
 	}
 
 	existingEnv := map[string]string{
-		"CF_BOUND_SERVICES": "SOME_SERVICE",
+		BoundServices: "SOME_SERVICE",
 	}
 
 	oc.On("Exists", "dc", "foo").Return(true, nil)
@@ -87,7 +130,7 @@ func TestBindServiceSimpleHappyPath(t *testing.T) {
 	expectedEnv := map[string]string{
 		"TEST_SERVICE_USER":  "bar",
 		"TEST_SERVICE_LABEL": "mysql",
-		"CF_BOUND_SERVICES":  "SOME_SERVICE TEST_SERVICE",
+		BoundServices:        "SOME_SERVICE TEST_SERVICE",
 	}
 	oc.On("SetEnv", "dc", "foo", expectedEnv).Return(nil)
 
@@ -102,7 +145,7 @@ func TestUnbindServiceHappyPath(t *testing.T) {
 
 	existingEnv := map[string]string{
 		"FOO":                   "bar",
-		"CF_BOUND_SERVICES":     "TEST_SERVICE SOME_SERVICE",
+		BoundServices:           "TEST_SERVICE SOME_SERVICE",
 		"TEST_SERVICE_LABEL":    "test-service",
 		"TEST_SERVICE_DATABASE": "test-database",
 	}
@@ -111,7 +154,7 @@ func TestUnbindServiceHappyPath(t *testing.T) {
 	oc.On("Env", "dc", "foo").Return(existingEnv, nil)
 
 	expectedEnv := map[string]string{
-		"CF_BOUND_SERVICES":     "SOME_SERVICE",
+		BoundServices:           "SOME_SERVICE",
 		"TEST_SERVICE_LABEL":    "-",
 		"TEST_SERVICE_DATABASE": "-",
 	}

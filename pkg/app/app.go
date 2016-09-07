@@ -22,7 +22,8 @@ type Application struct {
 	oc        oc.Oc
 }
 
-const cf_bound_services string = "CF_BOUND_SERVICES"
+const BoundServices string = "CF_BOUND_SERVICES"
+const BuildpackUrl string = "BUILDPACK_URL"
 
 func (app *Application) Push(image string) {
 	app.setupDefaults()
@@ -62,14 +63,14 @@ func (app *Application) BindService(service string) error {
 		return err
 	}
 
-	boundServices := appEnv[cf_bound_services]
+	boundServices := appEnv[BoundServices]
 	alreadyBound, err := regexp.MatchString(fmt.Sprint("\\s?", envPrefix, "\\s?"), boundServices)
 	if alreadyBound {
 		return errors.New(fmt.Sprintf("Error: Service %s already bound to application %s\n", service, app.Name))
 	}
 	boundServices = strings.TrimLeft(fmt.Sprint(boundServices, " ", envPrefix), " ")
 
-	env[cf_bound_services] = boundServices
+	env[BoundServices] = boundServices
 
 	err = app.oc.SetEnv("dc", app.Name, env)
 	if err != nil {
@@ -106,9 +107,9 @@ func (app *Application) UnbindService(service string) error {
 		}
 	}
 
-	if strings.Contains(appEnv[cf_bound_services], envPrefix) {
-		newEnv[cf_bound_services] = strings.Trim(
-			strings.Replace(appEnv[cf_bound_services], envPrefix, "", -1), " ")
+	if strings.Contains(appEnv[BoundServices], envPrefix) {
+		newEnv[BoundServices] = strings.Trim(
+			strings.Replace(appEnv[BoundServices], envPrefix, "", -1), " ")
 
 		err = app.oc.SetEnv("dc", app.Name, newEnv)
 		if err != nil {
@@ -146,29 +147,25 @@ func (app *Application) displayProject() error {
 }
 
 func (app *Application) ensureBuildExists(image string) {
-	output, err := app.oc.Exec("get", "bc", app.Name).CombinedOutput()
-	if strings.Contains(string(output), "not found") {
-		newCmd := app.oc.Exec(app.createBuildArgs(image)...)
-		fmt.Printf("==> Creating build with command: %s\n", newCmd.ArgsString())
-		// oc new-build sometimes gives a non-zero exit status for ignorable errors
-		output, _ = newCmd.CombinedOutput()
-		fmt.Println(string(output))
-	} else if err != nil {
-		exitWithOutputAndError(output, err)
+	exists, err := app.oc.Exists("bc", app.Name)
+	if err != nil {
+		exitWithError(err)
+	} else if !exists {
+		env := make(map[string]string)
+		if app.Buildpack != "" {
+			env[BuildpackUrl] = app.Buildpack
+		}
+		app.oc.NewBuild(image, app.Name, env)
 	} else {
-		fmt.Printf("==> Build configuration already exists for %s, skipping creating one\n", app.Name)
+		fmt.Printf("==> Build configuration already exists for %s, updating\n", app.Name)
+		buildEnv, err := app.oc.Env("bc", app.Name)
+		if err != nil {
+			exitWithError(err)
+		}
+		if app.Buildpack != buildEnv[BuildpackUrl] {
+			app.oc.SetEnv("bc", app.Name, map[string]string{BuildpackUrl: app.Buildpack})
+		}
 	}
-}
-
-func (app *Application) createBuildArgs(image string) []string {
-	var buildpack string
-	if app.Buildpack != "" {
-		buildpack = fmt.Sprint("BUILDPACK_URL=", app.Buildpack)
-	} else {
-		buildpack = ""
-	}
-	return []string{"new-build", image, "--binary=true",
-		fmt.Sprint("--name=", app.Name), buildpack}
 }
 
 func (app *Application) startBuild() {
@@ -236,7 +233,7 @@ func (app *Application) envForServiceBindings() ([]string, error) {
 				env = append(env, fmt.Sprint(key, "=", value))
 			}
 		}
-		env = append(env, fmt.Sprint(cf_bound_services, "=", strings.Join(serviceNames, " ")))
+		env = append(env, fmt.Sprint(BoundServices, "=", strings.Join(serviceNames, " ")))
 	}
 	return env, nil
 }
